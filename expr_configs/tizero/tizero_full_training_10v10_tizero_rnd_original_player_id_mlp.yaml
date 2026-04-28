@@ -1,0 +1,293 @@
+# Copyright (c) 2026 Electronic Arts Inc. All rights reserved. See LICENSE for details.
+
+expr_group: gr_football
+expr_name: tizero_full_training_10v10_tizero_rnd_original_player_id_mlp
+log_dir: logs             #log directory
+eval_only: False            #True if only want evaluation
+
+distributed:
+  use: False
+  auto_connect:
+  auto_copy:
+  nodes:
+    master:
+      ip: "auto"
+    workers:      
+      - ip:
+
+framework:
+  name: "tizero"                #framework name
+
+  # Determines whether to run a test session (i.e. trains forever on the scenario given in 
+  # {rollout_manager.worker.envs[0].scenario_config.env_name} for the framework or normal training (Curriculum, Challenege, and Generalize)
+  test_mode: False
+
+  meta_solver: "tizero"         #'nash', 'uniform', 'pfsp', 'tizero'
+  curriculum:
+    rollout_length: 500
+    start_diff: 0
+    max_diff_lvl: 10
+  challenge:
+    rollout_length: 500
+  generalize:
+    rollout_length: 500
+  sync_training: True # on_policy
+  stopper:
+    #type: "win_rate_stopper"
+    kwargs:
+      curriculum_min_win_rate: 0.75
+      challenge_min_win_rate: 0.75
+      generalize_min_win_rate: 0.75
+agent_manager:
+  num_agents: 2
+  share_policies: True
+
+evaluation_manager:
+  num_eval_rollouts: 1
+
+policy_data_manager:
+  update_func: "gr_football" 
+  fields:
+    payoff:
+      type: "matrix"
+      missing_value: -100 
+    score:
+      type: "matrix"
+      missing_value: -100 
+    win:
+      type: "matrix"
+      missing_value: -100 
+    lose:
+      type: "matrix"
+      missing_value: -100 
+    my_goal:
+      type: "matrix"
+      missing_value: -100 
+    goal_diff:
+      type: "matrix"
+      missing_value: -100 
+        
+monitor:
+  type: "local"   #'remote': wandb or 'local': tensorboard
+  distributed:
+    resources:
+      num_cpus: 1
+      resources:
+        - ["node:${distributed.nodes.master.ip}",0.01]
+
+rollout_manager:
+  distributed:
+    resources:
+      num_cpus: 1
+      resources:
+        - ["node:${distributed.nodes.master.ip}",0.01]
+  num_workers: 40   # numbers of parallel rollout worker, one env per worker by default
+  seed: 12345
+  saving_interval: 200 # the frequency of dumping model's weight
+  batch_size: ${rollout_manager.num_workers}
+  eval_batch_size: 100
+  eval_freq: 100 # epochs
+  max_global_rollout_steps: 170000000 # Maximum number of rollout steps after which the training session will be stopped. -1 for no limit.
+  rollout_metric_cfgs:
+    reward:
+      type: "sliding"
+      window_size: 1
+      init_list: [-10000]
+    win:
+      type: "sliding"
+      window_size: 1
+      init_list: [0]
+    win_against_recent:
+      type: "sliding"
+      window_size: 1
+      init_list: [0]
+    
+  worker:
+    distributed:
+      resources:
+        num_cpus: 1
+    sample_length: -1                                     #every $sample_length traj will be push to buffer during rollout, < 0 means full rollout_length will be pushed (used for sync)
+    padding_length: # of not use in gr_football
+    rollout_func_name: "rollout_func"
+    episode_mode: 'traj'                                    # traj or time-step
+    envs:
+      - cls: "gr_football"
+        id_prefix: "gr_footbal"
+        scenario_config:
+          env_name: "full_game_10_vs_10_diff_0"
+          number_of_left_players_agent_controls: 10 
+          number_of_right_players_agent_controls: 10 
+          representation: "raw"
+          rewards: "scoring"
+          stacked: False
+          logdir: '/tmp/football/malib_psro'
+          write_goal_dumps: False
+          write_full_episode_dumps: False
+          render: False
+          other_config_options:
+            action_set: v2  #default/v2, v2 is only used for built-in AI
+        reward_config:
+          out_of_bound_penalty: 0.001
+          gather_penalty: 0.001
+          pass_reward: 0.05
+          hold_ball: 0.1
+          official_reward: 1
+          total_dist_to_ball_reward: 0
+          different_action_reward: 0
+
+    credit_reassign:
+    decaying_exploration:
+      init_noise: 0             #random exploration noise level
+      total_epoch_to_zero: 2000    #number of epoch when exploration noise decay to zero
+      interval: 400                #number of epoch at each fixed exploration noise level
+
+training_manager:
+  distributed:
+    resources:
+      num_cpus: 1
+      resources:
+        - ["node:${distributed.nodes.master.ip}",0.01]
+ 
+  master_addr: "localhost"
+  master_port:  "12774"
+  local_queue_size: 1
+  batch_size: ${rollout_manager.num_workers} # how many data sample from DatasetServer per time.
+  num_prefetchers: 1
+  data_prefetcher:
+    distributed:
+      resources:
+        num_cpus: 1
+  num_trainers: 1 # equals to number of GPUs by default
+  # control the frequency of remote parameter update
+  update_interval: 1
+  gpu_preload: False
+  # Use Self-Supervised Intrinsic Reward (SSIR) in the curriculum phase, then use RND in the challenge and generalize phases (will override the use_intrinsic_reward and use_exploration_bonus in the trainer section)
+  use_intrinsic_first_then_exploration_bonus: False 
+  trainer:
+    distributed:
+      resources:
+        num_cpus: 1
+        num_gpus: 1
+        resources:
+          - ["node:${distributed.nodes.master.ip}",0.01]
+    optimizer: "Adam"
+    actor_lr: 1.e-4
+    critic_lr: 5.e-4
+    opti_eps: 1.e-5
+    weight_decay: 0.0
+    lr_decay: False            #update_linear_schedule
+    lr_decay_epoch: 2000      #how many rollout steps till zero
+    use_intrinsic_reward: False # Use Self-Supervised Intrinsic Reward (SSIR)
+    use_exploration_bonus: True # Use RND
+
+data_server:
+  distributed:
+    resources:
+      num_cpus: 1
+      resources:
+        - ["node:${distributed.nodes.master.ip}",0.01]
+  table_cfg:
+    capacity: ${rollout_manager.num_workers}
+    sampler_type: "lumrf"
+    sample_max_usage: 1
+    rate_limiter_cfg:
+      min_size: ${training_manager.batch_size}
+      # r_w_ratio: 10.0
+  read_timeout: 1
+
+policy_server:
+  distributed:
+    resources:
+      num_cpus: 1
+      resources:
+        - ["node:${distributed.nodes.master.ip}",0.01]
+
+populations:
+  - population_id: default # population_id
+    algorithm:
+      name: "TiZero"
+      model_config:
+        model: "gr_football.tizero"       # model type
+        initialization:
+          use_orthogonal: True
+          gain: 0.01
+        actor:
+          network: mlp
+          use_pos_encoding: False
+          layers:
+            - units: 256
+              activation: ReLU
+            - units: 128
+              activation: ReLU
+            - units: 64
+              activation: ReLU
+          output:
+            activation: False
+        critic:
+          network: mlp
+          layers:
+            - units: 256
+              activation: ReLU
+            - units: 128
+              activation: ReLU
+            - units: 64
+              activation: ReLU
+          output:
+            activation: False
+
+      # set hyper parameter
+      custom_config:
+        FE_cfg:
+          num_players: 22   #config sent to the Feature Encoder
+        gamma: 0.999
+        use_cuda: True  # enable cuda or not
+        ppo_epoch: 2
+        num_mini_batch: 1  # the number of mini-batches
+        num_players_controlled: 10
+
+        # Self-Supervised Intrinsic Reward (SSIR) Config
+        intrinsic_reward_update_freq: 4 
+        intrinsic_reward_lr: 5.e-4
+        clipping_epsilon: 0.01
+
+        # RND Config
+        exploration_bonus_update_freq: 1
+        exploration_bonus_lr: 5.e-4
+        exploration_bonus_coefficient: 0.0001
+
+        # Use SSIR and/or RND bonuses after this many rollouts/training epochs
+        use_intrinsic_after: 700 
+
+        value_loss_coef: 1.0
+        
+        return_mode: new_gae
+        gae:
+          gae_lambda: 0.995
+
+        use_rnn: True
+        # this is not used, instead it is fixed to last hidden in actor/critic
+        rnn_layer_num: 1
+        rnn_data_chunk_length: 25
+
+        use_feature_normalization: True
+        use_popart: False
+        popart_beta: 0.99999
+
+        entropy_coef: 0.01
+        clip_param: 0.2
+
+      policy_init_cfg:
+        agent_0: # agent_id
+          new_policy_ctr_start: -1
+          init_cfg:
+            - condition: "==0" # condition if True in order
+              strategy: random
+              policy_id:
+              policy_dir:
+            - condition: "default" # default case.
+              strategy: inherit_last_best # now support pretrained, inherit_last, random
+              policy_id:
+              policy_dir:
+          initial_policies:
+            - policy_id: built_in_10
+              policy_dir: light_malib/trained_models/gr_football/11_vs_11/built_in
